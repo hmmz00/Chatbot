@@ -1,72 +1,73 @@
-import os
-import logging
-import requests
-from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from dotenv import load_dotenv
+import requests
+import os
 
-# Load environment variables
-load_dotenv()
+# Inisialisasi FastAPI
+app = FastAPI()
 
-logging.basicConfig(level=logging.INFO)
-
-# Config
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+# Ambil API Key dari environment di Vercel
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-MODEL_NAME = os.getenv("MODEL_NAME", "openai/gpt-oss-20b")
-ALLOWED_ORIGINS = os.getenv("CORS_ALLOW_ORIGINS", "*").split(",")
 
+# Model fix sesuai permintaan
+MODEL_NAME = "openai/gpt-oss-20b"
+
+# Prompt sistem
 SYSTEM_PROMPT = {
     "role": "system",
-    "content": (
-        "Kamu adalah Hmmz Bot, asisten serba bisa yang siap membantu. "
-        "Gunakan nama 'Hmmz Bot' saat menjawab. Gaya komunikasi: singkat, jelas, tanpa basa-basi."
-    )
+    "content": "Kamu adalah Hmmz Bot, jawab singkat, jelas, dan langsung ke poin."
 }
 
-# FastAPI app
-app = FastAPI()
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
+# Schema untuk request
 class ChatRequest(BaseModel):
     message: str
 
+# Root endpoint (biar tidak 404)
+@app.get("/")
+async def root():
+    return {
+        "name": "Hmmz Bot API",
+        "status": "ok",
+        "endpoints": ["/ping", "/chat"]
+    }
+
+# Endpoint health check
 @app.get("/ping")
 async def ping():
-    return {"status": "ok"}
+    return {"status": "alive"}
 
+# Endpoint chat
 @app.post("/chat")
 async def chat(req: ChatRequest):
+    if not OPENROUTER_API_KEY:
+        raise HTTPException(status_code=500, detail="OPENROUTER_API_KEY belum diset di environment.")
+
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "model": MODEL_NAME,
+        "messages": [
+            SYSTEM_PROMPT,
+            {"role": "user", "content": req.message}
+        ],
+        "max_tokens": 1000,
+        "temperature": 0.7,
+    }
+
     try:
-        headers = {
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://hmmz00.github.io/test01/",
-            "X-Title": "Hmmz Bot"
-        }
-
-        payload = {
-            "model": MODEL_NAME,
-            "messages": [
-                SYSTEM_PROMPT,
-                {"role": "user", "content": req.message}
-            ],
-            "max_tokens": 1000,
-            "temperature": 0.7,
-        }
-
-        resp = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=15)
+        resp = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=20)
         resp.raise_for_status()
         data = resp.json()
-        reply = data.get("choices", [{}])[0].get("message", {}).get("content", "⚠️ Tidak ada jawaban.")
+
+        reply = data.get("choices", [{}])[0].get("message", {}).get("content")
+        if not reply:
+            reply = "⚠️ Model tidak memberikan jawaban."
+
         return {"reply": reply}
+
     except Exception as e:
-        logging.error(f"Chat error: {e}")
-        return {"error": "⚠️ Terjadi kesalahan server"}
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
